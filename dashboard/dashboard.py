@@ -185,10 +185,14 @@ def get_score_gauge(title, width, risk, val):
     )
 
 """
-
+Returns the layout for empirical risk score gauges.
+Stucture has two rows including the gauges themselves
+and the risk scores on a new line
 """
 def create_gauges(features, patient_id, hour):
     if len(features) > 4:
+        # Creates two lines of gauges if too many features
+        # This was added in case we wanted to include different options
         line_1=create_gauges(features[:4], patient_id, hour)
         line_2=create_gauges(features[4:], patient_id, hour)
         return [line_1[0], line_1[1], line_2[0], line_2[1]]
@@ -209,6 +213,11 @@ def create_gauges(features, patient_id, hour):
         ])
         ]
     
+"""
+Returns a list of labels used to include a warning symbol when a patient is septic.
+This would not be included in a released version of the dashboard, but is useful
+for demonstration purposes.
+"""
 def get_patient_labels():
     sepsis_patients = data[data['SepsisLabel']==1]['Patient_ID'].unique()
     labels = []
@@ -222,6 +231,9 @@ def get_patient_labels():
         labels.append(d)
     return labels
 
+"""
+Returns the probability of sepsis for a patient at the selected hour and all the hours before
+"""
 def get_hour_predictions(hour, patient):
     patient_sepsis_probs = sepsis_probs[sepsis_probs['Patient_ID'] == patient].reset_index(drop=True)
     preds = []
@@ -229,6 +241,11 @@ def get_hour_predictions(hour, patient):
         preds.append(patient_sepsis_probs.at[h, 'SepsisProb'] * 100)
     return preds
 
+"""
+Returns a HTML span element that can be included underneath the nearest patient
+checkboxes to show whether they have sepsis and, if so, how long it is until
+they develop it.
+"""
 def get_time_until_sepsis(patient, hour):
     patient_data = data[data['Patient_ID'] == patient]
     sepsis_patient_data = patient_data[patient_data['SepsisLabel'] == 1]
@@ -243,6 +260,8 @@ def get_time_until_sepsis(patient, hour):
     else:
         return html.Span(['(Not septic)'])
 
+# ----------------------------------------------------------------------------------------------------------------------------------
+# LAYOUT OF APPLICATION
 
 header = html.H4(
     "Visualisation of Sepsis Prediction", className="bg-primary text-white p-2 mb-2 mt-2 text-center rounded-2"
@@ -360,7 +379,12 @@ app.layout = dbc.Container(
     fluid=True,
     className="dbc"
 )
+ # ----------------------------------------------------------------------------------------------------------------------------------------
 
+"""
+Callback to update the hour timeline length to the number of hours of data
+for the selected patient
+"""
 @app.callback(
     Output('hour-slider', 'max'),
     Input('patient-dropdown', 'value')
@@ -368,6 +392,10 @@ app.layout = dbc.Container(
 def update_slider(patient):
     return data[data['Patient_ID'] == patient]['Hour'].max()
 
+"""
+Callback for setting the values of the nearest patients when a new patient is selected
+Updates the potential options and ensures the value is cleared
+"""
 @app.callback(
     Output('nearest-patients-checklist', 'options'),
     Output('nearest-patients-checklist', 'value'),
@@ -385,6 +413,10 @@ def update_nearest_patients(patient, hour, selected_nearest_patients):
             value.append(p)
     return nearest_patients_list, value
 
+"""
+Callback to update the colour of the sepsis prediction bar
+Transitions from green to red as the number increases
+"""
 @app.callback(
     Output('sepsis-prediction-value', 'color'),
     Input('sepsis-prediction-value', 'value')
@@ -396,6 +428,11 @@ def update_prediction_color(value):
     increments = math.floor(value / increment)
     return color_scale[increments]
 
+"""
+Callback that handles the update of all widgets.
+Called when either the hour, the patient or the features tabs are changed
+or when a nearest patient is selected
+"""
 @app.callback(
     Output('patient-graph-container', 'children'),
     Output('sepsis-prediction-value', 'value'),
@@ -407,17 +444,21 @@ def update_prediction_color(value):
     Input('patient-dropdown', 'value'),
     Input('nearest-patients-checklist', 'value'))
 def update_graph(value, measure, patient, nearest_patients):
+    # Try except handles when value hasn't been set yet
     try:
         graph_df = data[data['Hour'] <= int(value)]
     except:
         value = 0
         graph_df = data[data['Hour'] <= 0]
     no_lim_patient_df = data[data['Patient_ID'] == patient]
+    # Checks whether the current hour is higher than the max for the selected patient
+    # Became a problem when switching between patients with a high hour selected
     if value > no_lim_patient_df['Hour'].max():
         value = no_lim_patient_df['Hour'].max()
     sepsis_prob = sepsis_probs[sepsis_probs['Patient_ID'] == patient].reset_index(drop=True).at[value, 'SepsisProb']
     
     graph_df = graph_df.isnull().sum()
+    # Sets layout dictionary for the line chart displaying model predictions over time
     prediction_graph_layout = {
         'xaxis':{
             'showgrid':False,
@@ -440,10 +481,12 @@ def update_graph(value, measure, patient, nearest_patients):
         'margin': {'l':0, 'r':0, 't':10, 'b':10},
         'dragmode': False
         }
+    # Sets dataframe to include data up to and including the selected hour
     patient_df = no_lim_patient_df[no_lim_patient_df['Hour'] <= value]
     pred_figure = px.line(get_hour_predictions(int(value), patient))
     pred_figure.layout = prediction_graph_layout
     CHART_MEASURE = measure
+    # Ensures range of y axis encompasses all data, including that of nearest patients
     y_range = [no_lim_patient_df[CHART_MEASURE].min()-np.abs(no_lim_patient_df[CHART_MEASURE].min()/10), no_lim_patient_df[CHART_MEASURE].max() + np.abs(no_lim_patient_df[CHART_MEASURE].max()/10)]
     for n in nearest_patients:
         n_df = data[data['Patient_ID'] == n]
@@ -453,10 +496,12 @@ def update_graph(value, measure, patient, nearest_patients):
             y_range[0] = min_val
         if max_val > y_range[1]:
             y_range[1] = max_val
+    # Plots a scatte graph in the features plot if the hour is 0
     if value == 0:
         output_figure = px.scatter(patient_df, x='Hour', y=CHART_MEASURE, template='solar').update_xaxes(range=[0, no_lim_patient_df['Hour'].max() + no_lim_patient_df['Hour'].max()/10]).update_yaxes(range=y_range)
     else:
         output_figure = px.line(patient_df, x='Hour', y=CHART_MEASURE, template='solar').update_xaxes(range=[0, no_lim_patient_df['Hour'].max() + no_lim_patient_df['Hour'].max()/10]).update_yaxes(range=y_range)
+    # Adds lines for nearest patients to the features plot
     if len(nearest_patients) > 0:
         for p in nearest_patients:
             n_df = data[data['Patient_ID'] == p]
