@@ -3,57 +3,50 @@ from dash import Dash, dcc, html, Input, Output
 import dash_bootstrap_components as dbc
 import plotly.express as px
 import plotly.graph_objects as go
-import plotly.io as pio
 import numpy as np
 from dash_bootstrap_templates import load_figure_template
-import igraph
-from igraph import Graph, EdgeSeq
 from hausdorff import hausdorff_distance
-import itertools
 import math
 import dash_daq as daq
 
+# Controls the height of the parts of the dashboard above the timeline
 TOP_HALF_HEIGHT = 85
+# Holds the current feature in the feature plot
 CHART_MEASURE = 'HR'
-
-
+# Constants for deploying empirical risk score gauges
 SOFA_FEATURES = ['HR', 'Temp', 'Resp', 'Creatinine', 'MAP', 'qSOFA', 'Platelets', 'Bilirubin_total']
+SCORE_RANGES = {SOFA_FEATURES[0]:(0, 150), SOFA_FEATURES[1]:(30, 42), SOFA_FEATURES[2]:(0,40),SOFA_FEATURES[3]:(0,6),SOFA_FEATURES[4]:(0, 100),SOFA_FEATURES[5]:(0,1),SOFA_FEATURES[6]:(0,200),SOFA_FEATURES[7]:(0,7)}
+RISK_COLOURS= {0:'#238823', 1:'#fab733', 2:'#ff8e15', 3:'#d2222d'}
 
+# Reads in the primary data for the dashboard
 data = (
     pd.read_csv("dashboard_multivariate_set.csv")
 )
 
+# Reads in the sepsis probabilities for each hour of each patient
 sepsis_probs = (
     pd.read_csv('test_set_prediction_probabilities_v1.csv')
 )
 
+# Reads in the five nearest patients for each patient
 nearest_patients_df = (
     pd.read_csv('nearest_neighbours_efficient.csv', index_col=0)
 )
 
+# Sets a useful DF containing all the unique patient ids in the data
 patients = data['Patient_ID'].unique()
 
-df = round(100*(data.isnull().sum()/len(data.index)),2)
-df = pd.DataFrame({'Measurement':df.index, 'No. of Missing Values':df.values})
+# Creates instant of Dash application for setting layout etc.
 app = Dash(__name__, external_stylesheets=[dbc.themes.SOLAR, dbc.icons.BOOTSTRAP])
 load_figure_template(['solar'])
 
-SCORE_RANGES = {SOFA_FEATURES[0]:(0, 150), SOFA_FEATURES[1]:(30, 42), SOFA_FEATURES[2]:(0,40),SOFA_FEATURES[3]:(0,6),SOFA_FEATURES[4]:(0, 100),SOFA_FEATURES[5]:(0,1),SOFA_FEATURES[6]:(0,200),SOFA_FEATURES[7]:(0,7)}
-RISK_COLOURS= {0:'#238823', 1:'#fab733', 2:'#ff8e15', 3:'#d2222d'}
-PREV_PATIENT = None
-NEAREST_PATIENTS = None
-
-
+# Changes a colour hex code rgb values
 def hex_to_RGB(hex_str):
     """ #FFFFFF -> [255,255,255]"""
-    #Pass 16 to the integer function for change of base
     return [int(hex_str[i:i+2], 16) for i in range(1,6,2)]
 
+# Returns n colour hex codes representing a gradient between c1 and c2
 def get_color_gradient(c1, c2, n):
-    """
-    Given two hex colors, returns a color gradient
-    with n colors.
-    """
     assert n > 1
     c1_rgb = np.array(hex_to_RGB(c1))/255
     c2_rgb = np.array(hex_to_RGB(c2))/255
@@ -61,13 +54,15 @@ def get_color_gradient(c1, c2, n):
     rgb_colors = [((1-mix)*c1_rgb + (mix*c2_rgb)) for mix in mix_pcts]
     return ["#" + "".join([format(int(round(val*255)), "02x") for val in item]) for item in rgb_colors]
 
+"""
+Finds the empiric (risk) score for HR, SBP, MAP, Resp, Temp, creatine,
+platelets and total bilirubin according to scoring system of NEWS,
+SOFA and qSOFA 
+(https://github.com/Meicheng-SEU/EASP/blob/master/feature_engineering.py)
+
+Outputs data structure for use with gauges
+"""
 def empiric_risk_score(patient, hour):
-    ''' 
-    finds the empiric (risk) score for HR, SBP, MAP, Resp, Temp, creatine,
-    platelets and total bilirubin according to scoring system of NEWS,
-    SOFA and qSOFA 
-    (https://github.com/Meicheng-SEU/EASP/blob/master/feature_engineering.py)
-    '''
     scores = {}
     ii = hour
     HR = patient.at[ii, SOFA_FEATURES[0]]
@@ -168,108 +163,11 @@ def empiric_risk_score(patient, hour):
     scores[SOFA_FEATURES[7]] = Bilirubin_score
     return scores
 
-def empiric_risk_labels(intervals, feature):
-    ''' 
-    finds the empiric (risk) score for HR, SBP, MAP, Resp, Temp, creatine,
-    platelets and total bilirubin according to scoring system of NEWS,
-    SOFA and qSOFA 
-    (https://github.com/Meicheng-SEU/EASP/blob/master/feature_engineering.py)
-    '''
-    custom = {}
-    if feature == SOFA_FEATURES[0]:
-        for HR in intervals:
-            if HR == np.nan:
-                HR_score = np.nan
-            elif (HR <= 40) | (HR >= 131):
-                HR_score = 3
-            elif 111 <= HR <= 130:
-                HR_score = 2
-            elif (41 <= HR <= 50) | (91 <= HR <= 110):
-                HR_score = 1
-            else:
-                HR_score = 0
-            custom[HR] = {'label':str(HR_score)}
-    elif feature == SOFA_FEATURES[1]:
-        for Temp in intervals:
-            if Temp == np.nan:
-                Temp_score = np.nan
-            elif Temp <= 35:
-                Temp_score = 3
-            elif Temp >= 39.1:
-                Temp_score = 2
-            elif (35.1 <= Temp <= 36.0) | (38.1 <= Temp <= 39.0):
-                Temp_score = 1
-            else:
-                Temp_score = 0
-            custom[Temp] = {'label':str(Temp_score)}
-    elif feature == SOFA_FEATURES[2]:
-        for Resp in intervals:
-            if Resp == np.nan:
-                Resp_score = np.nan
-            elif (Resp < 8) | (Resp > 25):
-                Resp_score = 3
-            elif 21 <= Resp <= 24:
-                Resp_score = 2
-            elif 9 <= Resp <= 11:
-                Resp_score = 1
-            else:
-                Resp_score = 0
-            custom[Resp] = {'label':str(Resp_score)}
-    elif feature == SOFA_FEATURES[3]:
-        for Creatinine in intervals:
-            if Creatinine == np.nan:
-                Creatinine_score = np.nan
-            elif Creatinine < 1.2:
-                Creatinine_score = 0
-            elif Creatinine < 2:
-                Creatinine_score = 1
-            elif Creatinine < 3.5:
-                Creatinine_score = 2
-            else:
-                Creatinine_score = 3
-            custom[Creatinine_score] = {'label':str(Creatinine_score)}
-    elif feature == SOFA_FEATURES[4]:
-        for MAP in intervals:
-            if MAP == np.nan:
-                MAP_score = np.nan
-            elif MAP >= 70:
-                MAP_score = 0
-            else:
-                MAP_score = 1
-            custom[MAP] = {'label':str(MAP_score), 'style':{'font-size':'1px'}}
-    elif feature == SOFA_FEATURES[5]:
-        custom[0] = {'label:':str(0)}
-        custom[1] = {'label':str(1)}
-    elif feature == SOFA_FEATURES[6]:
-        for Platelets in intervals:
-            if Platelets == np.nan:
-                Platelets_score = np.nan
-            elif Platelets <= 50:
-                Platelets_score = 3
-            elif Platelets <= 100:
-                Platelets_score = 2
-            elif Platelets <= 150:
-                Platelets_score = 1
-            else:
-                Platelets_score = 0
-            custom[Platelets] = {'label':str(Platelets_score)}
-    elif feature == SOFA_FEATURES[7]:
-        for Bilirubin in intervals:
-            if Bilirubin == np.nan:
-                Bilirubin_score = np.nan
-            elif Bilirubin < 1.2:
-                Bilirubin_score = 0
-            elif Bilirubin < 2:
-                Bilirubin_score = 1
-            elif Bilirubin < 6:
-                Bilirubin_score = 2
-            else:
-                Bilirubin_score = 3
-            custom[Bilirubin] = {'label':str(Bilirubin_score)}
-    return custom
-
+"""
+Returns a gauge for visualising an empirical risk score for one feature
+Takes in the score title, the width of the gauge, the value of the feature and the risk score
+"""
 def get_score_gauge(title, width, risk, val):
-    custom = empiric_risk_labels(range(SCORE_RANGES[title][0], SCORE_RANGES[title][1], 1), title)
     risk = risk.tolist()[0]
     colour = RISK_COLOURS[val]
     if title == 'qSOFA':
@@ -286,6 +184,9 @@ def get_score_gauge(title, width, risk, val):
         color=colour
     )
 
+"""
+
+"""
 def create_gauges(features, patient_id, hour):
     if len(features) > 4:
         line_1=create_gauges(features[:4], patient_id, hour)
@@ -327,6 +228,20 @@ def get_hour_predictions(hour, patient):
     for h in range(hour+1):
         preds.append(patient_sepsis_probs.at[h, 'SepsisProb'] * 100)
     return preds
+
+def get_time_until_sepsis(patient, hour):
+    patient_data = data[data['Patient_ID'] == patient]
+    sepsis_patient_data = patient_data[patient_data['SepsisLabel'] == 1]
+    sepsis_hour = sepsis_patient_data['Hour'].min()
+    if hour == None:
+        hour = 0
+    if not pd.isna(sepsis_hour):
+        difference = int(sepsis_hour)-int(hour)
+        if difference < 0:
+            difference = 0
+        return html.Span(['(' + str(difference) + ' hrs to sepsis)'], style={'color':'red'})
+    else:
+        return html.Span(['(Not septic)'])
 
 
 header = html.H4(
@@ -396,9 +311,9 @@ app.layout = dbc.Container(
                                 dbc.Row([
                                     dbc.Col(
                                         [
-                                            dcc.Tabs(id='tabs-patient-graphs', style={'height':'80%'}, value='HR', vertical = True, children=[
-                                                dcc.Tab(label=m, value = m, style={'font-size':'1.1vh', 'padding': '0.5px'},
-                                                        selected_style={'font-size':'1.1vh', 'padding': '0.5px'}) for m in data.drop(['SepsisLabel', 'Hour', 'Gender', 'Patient_ID', 'Age', 'ICULOS', 'HospAdmTime'], axis=1).columns
+                                            dcc.Tabs(id='tabs-patient-graphs', style={'height':'100%'}, value='HR', vertical = True, children=[
+                                                dcc.Tab(label=m, value = m, style={'font-size':'1.1vh', 'padding': '2px'},
+                                                        selected_style={'font-size':'1.1vh', 'padding': '2px'}) for m in data.drop(['SepsisLabel', 'Hour', 'Gender', 'Patient_ID', 'Age', 'ICULOS', 'HospAdmTime'], axis=1).columns
                                             ]),
                                         ],
                                         width=1
@@ -445,21 +360,6 @@ app.layout = dbc.Container(
     fluid=True,
     className="dbc"
 )
-
-def get_time_until_sepsis(patient, hour):
-    patient_data = data[data['Patient_ID'] == patient]
-    sepsis_patient_data = patient_data[patient_data['SepsisLabel'] == 1]
-    sepsis_hour = sepsis_patient_data['Hour'].min()
-    if hour == None:
-        hour = 0
-    if not pd.isna(sepsis_hour):
-        difference = int(sepsis_hour)-int(hour)
-        if difference < 0:
-            difference = 0
-        return html.Span(['(' + str(difference) + ' hrs to sepsis)'], style={'color':'red'})
-    else:
-        return html.Span(['(Not septic)'])
-
 
 @app.callback(
     Output('hour-slider', 'max'),
@@ -575,4 +475,4 @@ def update_graph(value, measure, patient, nearest_patients):
 
 
 if __name__ == "__main__":
-    app.run_server(debug=True, port=8050)
+    app.run_server(port=8050)
